@@ -25,7 +25,8 @@ const typeDefs = `
   type Mutation {
     login(username: String!, password: String!): String!
     createBooking(passengerName: String!, flightNumber: String!, origin: String!, destination: String!, date: String!, seatClass: String!): Booking!
-    updateBooking(id: ID!, passengerName: String, flightNumber: String, origin: String, destination: String, date: String, seatClass: String, status: String): Booking
+    updateBooking(id: ID!, passengerName: String, flightNumber: String, origin: String, destination: String, date: String, seatClass: String): Booking
+    cancelBooking(id: ID!): Booking
     deleteBooking(id: ID!): Boolean!
   }
 `;
@@ -106,6 +107,9 @@ const resolvers = {
     // CHANGED (Step 2 - fixes API1 BOLA): requires login and ownership.
     // NOTE: the "status" mass-assignment issue (API3) is still here on
     // purpose -- we fix that in Step 3, one issue at a time.
+    // CHANGED (Step 3 - fixes API3 Mass Assignment): "status" is no longer
+    // an argument on this mutation at all (removed from the schema above),
+    // so a client cannot even attempt to set it here anymore.
     updateBooking: (parent, args, context) => {
       if (!context.user) {
         throw new Error('Not authenticated');
@@ -121,7 +125,25 @@ const resolvers = {
       if (args.destination !== undefined) booking.destination = args.destination;
       if (args.date !== undefined) booking.date = args.date;
       if (args.seatClass !== undefined) booking.seatClass = args.seatClass;
-      if (args.status !== undefined) booking.status = args.status;
+      return booking;
+    },
+
+    // ADDED (Step 3): dedicated, safe mutation for the one status change
+    // customers actually need -- cancelling their own booking. Only ever
+    // does ONE specific, controlled transition (confirmed -> cancelled).
+    cancelBooking: (parent, args, context) => {
+      if (!context.user) {
+        throw new Error('Not authenticated');
+      }
+      const booking = bookings.find(b => b.id === args.id);
+      if (!booking) return null;
+      if (booking.userId !== context.user.id) {
+        throw new Error('Forbidden: this booking does not belong to you');
+      }
+      if (booking.status === 'cancelled') {
+        throw new Error('Booking is already cancelled');
+      }
+      booking.status = 'cancelled';
       return booking;
     },
     // CHANGED (Step 2 - fixes API1 BOLA): requires login and ownership.
