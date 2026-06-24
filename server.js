@@ -3,7 +3,7 @@ const { ApolloServer } = require('@apollo/server');
 const { expressMiddleware } = require('@as-integrations/express5');
 const bodyParser = require('body-parser');
 const rateLimit = require('express-rate-limit');   // <-- ADDED
-const { login, getUserFromToken } = require('./auth');
+const { login, getUserFromToken, requireRole } = require('./auth');
 
 // CHANGED (Step 1 - fixes API2 Broken Authentication):
 // Added a "login" mutation to the schema.
@@ -35,6 +35,11 @@ const typeDefs = `
   type Query {
     bookings(page: Int, limit: Int): BookingPage!
     booking(id: ID!): Booking
+    # ADDED (Step 5 - fixes API5 Broken Function Level Authorization):
+    # Admin-only query, separate from "bookings" (which stays
+    # customer-only, filtered to the caller's own data). Mirrors the
+    # REST version's separate GET /bookings/all admin route.
+    bookingsAll(page: Int, limit: Int): BookingPage!
   }
   type Mutation {
     login(username: String!, password: String!): String!
@@ -115,6 +120,33 @@ const resolvers = {
         limit,
         totalResults: myBookings.length,
         totalPages: Math.ceil(myBookings.length / limit),
+        data: paginatedResults
+      };
+    },
+
+    // ADDED (Step 5 - fixes API5): admin-only query, returns every
+    // booking in the system regardless of owner. requireRole() throws
+    // if context.user is missing OR doesn't have the 'admin' role --
+    // this is the GraphQL equivalent of Express's
+    // app.get(..., verifyToken, requireRole('admin'), handler).
+    bookingsAll: (parent, args, context) => {
+      requireRole(context.user, 'admin');
+
+      let page = args.page || 1;
+      let limit = args.limit || 10;
+      if (page < 1) page = 1;
+      if (limit < 1) limit = 10;
+      if (limit > 50) limit = 50;
+
+      const startIndex = (page - 1) * limit;
+      const endIndex = startIndex + limit;
+      const paginatedResults = bookings.slice(startIndex, endIndex);
+
+      return {
+        page,
+        limit,
+        totalResults: bookings.length,
+        totalPages: Math.ceil(bookings.length / limit),
         data: paginatedResults
       };
     },
@@ -225,19 +257,14 @@ const resolvers = {
       booking.status = 'cancelled';
       return booking;
     },
-    // CHANGED (Step 2 - fixes API1 BOLA): requires login and ownership.
-    // NOTE: in Step 5 this will be further restricted to admin-only,
-    // matching the REST version's DELETE /bookings/:id design.
+    // CHANGED (Step 5 - fixes API5): deleteBooking is now admin-only.
+    // Customers should use cancelBooking instead (Step 3) -- permanently
+    // deleting a record is a staff-level action, kept separate from a
+    // customer cancelling their own trip, matching the REST design.
     deleteBooking: (parent, args, context) => {
-      if (!context.user) {
-        throw new Error('Not authenticated');
-      }
-      const booking = bookings.find(b => b.id === args.id);
-      if (!booking) return false;
-      if (booking.userId !== context.user.id) {
-        throw new Error('Forbidden: this booking does not belong to you');
-      }
+      requireRole(context.user, 'admin');
       const index = bookings.findIndex(b => b.id === args.id);
+      if (index === -1) return false;
       bookings.splice(index, 1);
       return true;
     }

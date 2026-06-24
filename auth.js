@@ -72,4 +72,18 @@ function getUserFromToken(authHeader) {
   }
 }
 
-module.exports = { login, getUserFromToken, users };
+// --- requireRole() ---
+// Used INSIDE resolvers (not as middleware, since GraphQL has no
+// per-route middleware concept). Throws if the user's role isn't in
+// the allowed list. Usage inside a resolver:
+//   requireRole(context.user, 'admin');
+function requireRole(user, ...allowedRoles) {
+  if (!user) {
+    throw new Error('Not authenticated');
+  }
+  if (!allowedRoles.includes(user.role)) {
+    throw new Error('Forbidden: insufficient permissions for this action');
+  }
+}
+
+module.exports = { login, getUserFromToken, requireRole, users };
