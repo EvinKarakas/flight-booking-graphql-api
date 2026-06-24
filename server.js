@@ -9,23 +9,41 @@ const { login, getUserFromToken, requireRole } = require('./auth');
 
 // CHANGED (Step 1 - fixes API2 Broken Authentication):
 // Added a "login" mutation to the schema.
+//
+// ADDED (Step 8 - fixes API9 Improper Inventory Management):
+// GraphQL schemas support built-in documentation via triple-quoted
+// description strings on types, fields, and arguments. These are
+// returned automatically by introspection and shown in tools like
+// Postman's schema explorer and Apollo Sandbox -- this is the
+// GraphQL-native equivalent of the REST version's README.md, except
+// it lives directly inside the API contract itself.
 const typeDefs = `
+  """
+  A single flight booking record.
+  passengerName is personally identifiable information (PII) and must
+  only be returned to the booking's owner or an admin.
+  """
   type Booking {
     id: ID!
+    "ID of the user who owns this booking. Used for access control -- never settable directly by a client."
     userId: ID!
+    "Personally identifiable information (PII). Access-controlled: only the owner or an admin may view this."
     passengerName: String!
     flightNumber: String!
     origin: String!
     destination: String!
     date: String!
+    "One of: Economy, Premium Economy, Business, First."
     seatClass: String!
+    "One of: confirmed, cancelled. Only changeable via cancelBooking -- never directly settable on updateBooking."
     status: String!
   }
 
-  # ADDED (Step 4b - fixes API4 Unrestricted Resource Consumption):
-  # GraphQL has no built-in pagination format, so we define our own
-  # "page" type to carry both the results and the pagination metadata --
-  # the same shape we used for the REST version's paginated responses.
+  """
+  A paginated page of bookings. GraphQL has no built-in pagination
+  format, so this custom type carries both the results and pagination
+  metadata, mirroring the REST version's paginated JSON responses.
+  """
   type BookingPage {
     page: Int!
     limit: Int!
@@ -35,19 +53,24 @@ const typeDefs = `
   }
 
   type Query {
+    "Returns the logged-in user's own bookings, paginated. Requires authentication."
     bookings(page: Int, limit: Int): BookingPage!
+    "Returns one booking by id. Requires authentication and ownership of the booking."
     booking(id: ID!): Booking
-    # ADDED (Step 5 - fixes API5 Broken Function Level Authorization):
-    # Admin-only query, separate from "bookings" (which stays
-    # customer-only, filtered to the caller's own data). Mirrors the
-    # REST version's separate GET /bookings/all admin route.
+    "Admin only. Returns every booking in the system, regardless of owner, paginated."
     bookingsAll(page: Int, limit: Int): BookingPage!
   }
+
   type Mutation {
+    "Authenticates a user and returns a JWT. Send the returned token as 'Authorization: Bearer <token>' on all other requests."
     login(username: String!, password: String!): String!
+    "Creates a new booking owned by the logged-in user. Subject to per-flight and per-user seat limits."
     createBooking(passengerName: String!, flightNumber: String!, origin: String!, destination: String!, date: String!, seatClass: String!): Booking!
+    "Updates editable fields of the caller's own booking. Does NOT accept a status argument -- use cancelBooking instead."
     updateBooking(id: ID!, passengerName: String, flightNumber: String, origin: String, destination: String, date: String, seatClass: String): Booking
+    "Safely cancels the caller's own booking (sets status to 'cancelled')."
     cancelBooking(id: ID!): Booking
+    "Admin only. Permanently deletes a booking record."
     deleteBooking(id: ID!): Boolean!
   }
 `;
