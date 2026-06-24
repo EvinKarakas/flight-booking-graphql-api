@@ -3,6 +3,8 @@ const { ApolloServer } = require('@apollo/server');
 const { expressMiddleware } = require('@as-integrations/express5');
 const bodyParser = require('body-parser');
 const rateLimit = require('express-rate-limit');   // <-- ADDED
+const helmet = require('helmet');   // <-- ADDED
+const cors = require('cors');        // <-- ADDED
 const { login, getUserFromToken, requireRole } = require('./auth');
 
 // CHANGED (Step 1 - fixes API2 Broken Authentication):
@@ -88,6 +90,28 @@ function validateBookingInput(args) {
   if (!ALLOWED_SEAT_CLASSES.includes(seatClass)) {
     throw new Error(`seatClass must be one of: ${ALLOWED_SEAT_CLASSES.join(", ")}`);
   }
+}
+
+// ADDED (Step 6 - fixes API6 Unrestricted Access to Sensitive Business
+// Flows): same business-logic limits as the REST version. Worth noting:
+// GraphQL allows multiple aliased mutations in ONE request (e.g.
+// "a: createBooking(...) b: createBooking(...) c: createBooking(...)"),
+// which makes seat-blocking abuse easier to attempt here than in REST --
+// these checks matter even more for this version of the API.
+const MAX_SEATS_PER_FLIGHT = 5;
+const MAX_BOOKINGS_PER_USER_PER_FLIGHT = 2;
+
+function getFlightBookingCounts(flightNumber, date, userId) {
+  const activeBookingsForFlight = bookings.filter(b =>
+    b.flightNumber === flightNumber &&
+    b.date === date &&
+    b.status !== "cancelled"
+  );
+  const userBookingsForFlight = activeBookingsForFlight.filter(b => b.userId === userId);
+  return {
+    totalForFlight: activeBookingsForFlight.length,
+    totalForUser: userBookingsForFlight.length
+  };
 }
 
 const resolvers = {
@@ -184,6 +208,17 @@ const resolvers = {
       }
       // ADDED (Step 4c): validate input before creating anything
       validateBookingInput(args);
+
+      // ADDED (Step 6 - fixes API6): business logic checks BEFORE
+      // creating the booking.
+      const counts = getFlightBookingCounts(args.flightNumber, args.date, context.user.id);
+
+      if (counts.totalForFlight >= MAX_SEATS_PER_FLIGHT) {
+        throw new Error("This flight is fully booked");
+      }
+      if (counts.totalForUser >= MAX_BOOKINGS_PER_USER_PER_FLIGHT) {
+        throw new Error(`You already have the maximum of ${MAX_BOOKINGS_PER_USER_PER_FLIGHT} bookings on this flight`);
+      }
 
       const newBooking = {
         id: String(nextId++),
@@ -288,13 +323,56 @@ const server = new ApolloServer({
   // stays ON for your own testing -- but the pattern is correct and would
   // switch off automatically the moment NODE_ENV=production is set on
   // a real deployment.
-  introspection: process.env.NODE_ENV !== 'production'
+  introspection: process.env.NODE_ENV !== 'production',
+
+  // ADDED (Step 7b - fixes API8 Security Misconfiguration):
+  // By default, Apollo Server includes a full stack trace (file paths,
+  // line numbers, library internals) in every error response -- you've
+  // seen this in every test so far. formatError runs on every error
+  // before it's sent to the client, letting us strip those details out.
+  // The original error.message (e.g. "Forbidden: ...", "Not authenticated")
+  // is intentionally preserved, since those are meant to be seen by the
+  // client -- only the internal stacktrace/debugging info is removed.
+  formatError: (formattedError, error) => {
+    console.error(error); // full details still go to YOUR server logs
+
+    if (process.env.NODE_ENV === 'production') {
+      // Strip everything except the safe, intentional message and code.
+      return {
+        message: formattedError.message,
+        extensions: { code: formattedError.extensions?.code }
+      };
+    }
+    // In local/dev: keep the message and code, but drop the stacktrace
+    // specifically, since it's the part that leaks file paths internals.
+    const { stacktrace, ...safeExtensions } = formattedError.extensions || {};
+    return { ...formattedError, extensions: safeExtensions };
+  }
 });
 
 async function startServer() {
   await server.start();
 
   const app = express();
+
+  // ADDED (Step 7a - fixes API8 Security Misconfiguration):
+  // Same protections as the REST version: helmet adds several
+  // protective HTTP headers automatically.
+  app.use(helmet());
+
+  // ADDED (Step 7a): explicit CORS allow-list, instead of leaving
+  // cross-origin behavior on default/unconfigured settings.
+  const allowedOrigins = ['http://localhost:4000', 'http://localhost:5173'];
+  app.use(cors({
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    }
+  }));
+
   app.use(bodyParser.json());
 
   // ADDED (Step 4a - fixes API4 Unrestricted Resource Consumption):
