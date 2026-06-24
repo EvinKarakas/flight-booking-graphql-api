@@ -9,6 +9,7 @@ const { login, getUserFromToken } = require('./auth');
 const typeDefs = `
   type Booking {
     id: ID!
+    userId: ID!
     passengerName: String!
     flightNumber: String!
     origin: String!
@@ -32,6 +33,7 @@ const typeDefs = `
 let bookings = [
   {
     id: "1",
+    userId: 1,
     passengerName: "Evin Karakas",
     flightNumber: "TK1234",
     origin: "Istanbul",
@@ -45,8 +47,30 @@ let nextId = 2;
 
 const resolvers = {
   Query: {
-    bookings: () => bookings,
-    booking: (parent, args) => bookings.find(b => b.id === args.id)
+    // CHANGED (Step 2 - fixes API1 BOLA): now requires login (context.user),
+    // and only returns bookings belonging to the logged-in user.
+    // context is the 3rd resolver argument -- this is the GraphQL
+    // equivalent of checking req.user in an Express route handler.
+    bookings: (parent, args, context) => {
+      if (!context.user) {
+        throw new Error('Not authenticated');
+      }
+      return bookings.filter(b => b.userId === context.user.id);
+    },
+
+    // CHANGED (Step 2 - fixes API1 BOLA): requires login, and checks
+    // that the booking found actually belongs to the caller.
+    booking: (parent, args, context) => {
+      if (!context.user) {
+        throw new Error('Not authenticated');
+      }
+      const booking = bookings.find(b => b.id === args.id);
+      if (!booking) return null;
+      if (booking.userId !== context.user.id) {
+        throw new Error('Forbidden: this booking does not belong to you');
+      }
+      return booking;
+    }
   },
   Mutation: {
     // ADDED (Step 1 - fixes API2): login mutation. Same logic as the
@@ -57,9 +81,17 @@ const resolvers = {
       return login(args.username, args.password);
     },
 
-    createBooking: (parent, args) => {
+    // CHANGED (Step 2 - fixes API1 BOLA): requires login. userId now comes
+    // from context.user.id (the verified token) -- NOT from any client
+    // input. If we let the client specify userId directly, they could
+    // create a booking and claim it belongs to someone else.
+    createBooking: (parent, args, context) => {
+      if (!context.user) {
+        throw new Error('Not authenticated');
+      }
       const newBooking = {
         id: String(nextId++),
+        userId: context.user.id,
         passengerName: args.passengerName,
         flightNumber: args.flightNumber,
         origin: args.origin,
@@ -71,9 +103,18 @@ const resolvers = {
       bookings.push(newBooking);
       return newBooking;
     },
-    updateBooking: (parent, args) => {
+    // CHANGED (Step 2 - fixes API1 BOLA): requires login and ownership.
+    // NOTE: the "status" mass-assignment issue (API3) is still here on
+    // purpose -- we fix that in Step 3, one issue at a time.
+    updateBooking: (parent, args, context) => {
+      if (!context.user) {
+        throw new Error('Not authenticated');
+      }
       const booking = bookings.find(b => b.id === args.id);
       if (!booking) return null;
+      if (booking.userId !== context.user.id) {
+        throw new Error('Forbidden: this booking does not belong to you');
+      }
       if (args.passengerName !== undefined) booking.passengerName = args.passengerName;
       if (args.flightNumber !== undefined) booking.flightNumber = args.flightNumber;
       if (args.origin !== undefined) booking.origin = args.origin;
@@ -83,9 +124,19 @@ const resolvers = {
       if (args.status !== undefined) booking.status = args.status;
       return booking;
     },
-    deleteBooking: (parent, args) => {
+    // CHANGED (Step 2 - fixes API1 BOLA): requires login and ownership.
+    // NOTE: in Step 5 this will be further restricted to admin-only,
+    // matching the REST version's DELETE /bookings/:id design.
+    deleteBooking: (parent, args, context) => {
+      if (!context.user) {
+        throw new Error('Not authenticated');
+      }
+      const booking = bookings.find(b => b.id === args.id);
+      if (!booking) return false;
+      if (booking.userId !== context.user.id) {
+        throw new Error('Forbidden: this booking does not belong to you');
+      }
       const index = bookings.findIndex(b => b.id === args.id);
-      if (index === -1) return false;
       bookings.splice(index, 1);
       return true;
     }
