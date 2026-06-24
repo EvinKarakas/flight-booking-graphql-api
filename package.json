@@ -12,6 +12,11 @@
   "type": "commonjs",
   "dependencies": {
     "@apollo/server": "^5.5.1",
-    "graphql": "^16.14.2"
+    "@as-integrations/express5": "^1.1.2",
+    "bcryptjs": "^3.0.3",
+    "body-parser": "^2.3.0",
+    "express": "^5.2.1",
+    "graphql": "^16.14.2",
+    "jsonwebtoken": "^9.0.3"
   }
 }
